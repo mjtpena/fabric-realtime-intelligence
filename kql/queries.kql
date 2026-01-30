@@ -1,0 +1,286 @@
+// KQL Queries for IoT Telemetry Analytics
+// Real-time analytics queries for monitoring and insights
+
+// ============================================
+// Real-Time Monitoring Queries
+// ============================================
+
+// Query 1: Current device status (last 5 minutes)
+IoTTelemetry
+| where EventTime > ago(5m)
+| summarize arg_max(EventTime, *) by DeviceId
+| project
+    DeviceId,
+    DeviceType,
+    Location,
+    LastSeen = EventTime,
+    Temperature,
+    Humidity,
+    Pressure,
+    Power,
+    Status
+| order by LastSeen desc
+
+// Query 2: Real-time temperature heatmap
+IoTTelemetry
+| where EventTime > ago(1h)
+| summarize
+    AvgTemperature = avg(Temperature),
+    MaxTemperature = max(Temperature),
+    EventCount = count()
+    by Location, bin(EventTime, 5m)
+| order by EventTime desc
+
+// Query 3: Active alerts in last 24 hours
+DeviceAlerts
+| where AlertTime > ago(24h)
+| summarize AlertCount = count() by DeviceId, AlertType, Severity
+| order by AlertCount desc
+
+// ============================================
+// Time Series Analysis
+// ============================================
+
+// Query 4: Temperature trend with moving average
+IoTTelemetry
+| where EventTime > ago(24h) and DeviceId == "device-001"
+| order by EventTime asc
+| extend
+    MovingAvg = series_fir(Temperature, dynamic([1,1,1,1,1,1,1,1,1,1]), true, true)
+| project EventTime, Temperature, MovingAvg
+| render timechart
+
+// Query 5: Humidity patterns across device types
+IoTTelemetry
+| where EventTime > ago(7d)
+| summarize AvgHumidity = avg(Humidity) by DeviceType, bin(EventTime, 1h)
+| render timechart
+
+// Query 6: Power consumption trend by location
+IoTTelemetry
+| where EventTime > ago(24h)
+| summarize TotalPower = sum(Power) by Location, bin(EventTime, 30m)
+| render timechart
+
+// ============================================
+// Anomaly Detection
+// ============================================
+
+// Query 7: Temperature anomalies using series_decompose_anomalies
+IoTTelemetry
+| where EventTime > ago(7d) and DeviceType == "Sensor"
+| make-series AvgTemp = avg(Temperature) on EventTime step 1h
+| extend (anomalies, score, baseline) = series_decompose_anomalies(AvgTemp, 1.5, -1, 'linefit')
+| render anomalychart with (anomalycolumns=anomalies)
+
+// Query 8: Sudden power spikes detection
+IoTTelemetry
+| where EventTime > ago(1h)
+| order by DeviceId, EventTime asc
+| extend PrevPower = prev(Power, 1), PrevDeviceId = prev(DeviceId, 1)
+| where DeviceId == PrevDeviceId
+| extend PowerDelta = Power - PrevPower
+| where abs(PowerDelta) > 50
+| project EventTime, DeviceId, Location, Power, PrevPower, PowerDelta
+| order by abs(PowerDelta) desc
+
+// Query 9: Statistical outliers using percentiles
+IoTTelemetry
+| where EventTime > ago(1h)
+| summarize
+    P95 = percentile(Temperature, 95),
+    P05 = percentile(Temperature, 5),
+    Avg = avg(Temperature)
+    by DeviceId
+| join kind=inner (
+    IoTTelemetry
+    | where EventTime > ago(1h)
+) on DeviceId
+| where Temperature > P95 or Temperature < P05
+| project EventTime, DeviceId, Location, Temperature, Avg, P95, P05
+
+// ============================================
+// Aggregations and Statistics
+// ============================================
+
+// Query 10: Device health summary by location
+IoTTelemetry
+| where EventTime > ago(1h)
+| summarize
+    DeviceCount = dcount(DeviceId),
+    AvgTemperature = round(avg(Temperature), 2),
+    AvgHumidity = round(avg(Humidity), 2),
+    TotalEnergy = round(sum(EnergyConsumed), 2),
+    HealthyDevices = countif(Status == "healthy"),
+    UnhealthyDevices = countif(Status != "healthy")
+    by Location
+| extend HealthPercentage = round(HealthyDevices * 100.0 / DeviceCount, 2)
+| order by UnhealthyDevices desc
+
+// Query 11: Top 10 energy consumers
+IoTTelemetry
+| where EventTime > ago(24h)
+| summarize TotalEnergyConsumed = sum(EnergyConsumed) by DeviceId, Location
+| top 10 by TotalEnergyConsumed desc
+
+// Query 12: Device uptime analysis
+IoTTelemetry
+| where EventTime > ago(24h)
+| summarize
+    FirstSeen = min(EventTime),
+    LastSeen = max(EventTime),
+    EventCount = count()
+    by DeviceId
+| extend
+    Uptime = LastSeen - FirstSeen,
+    ExpectedEvents = 24 * 60, // Assuming 1 event per minute
+    UptimePercentage = round(EventCount * 100.0 / ExpectedEvents, 2)
+| order by UptimePercentage asc
+
+// ============================================
+// Geospatial Queries
+// ============================================
+
+// Query 13: Devices by geographic location
+IoTTelemetry
+| where EventTime > ago(5m)
+| summarize arg_max(EventTime, *) by DeviceId
+| project
+    DeviceId,
+    Location,
+    Latitude,
+    Longitude,
+    Temperature,
+    Status
+| where isnotnull(Latitude) and isnotnull(Longitude)
+
+// Query 14: Regional temperature distribution
+IoTTelemetry
+| where EventTime > ago(1h)
+| summarize
+    AvgTemperature = avg(Temperature),
+    DeviceCount = dcount(DeviceId)
+    by Location, LatitudeBin = bin(Latitude, 1.0), LongitudeBin = bin(Longitude, 1.0)
+| order by AvgTemperature desc
+
+// ============================================
+// Performance and Capacity Planning
+// ============================================
+
+// Query 15: Ingestion rate per minute
+IoTTelemetry
+| where EventTime > ago(1h)
+| summarize EventsPerMinute = count() by bin(EventTime, 1m)
+| render timechart
+
+// Query 16: Data volume by device type
+IoTTelemetry
+| where EventTime > ago(24h)
+| summarize
+    EventCount = count(),
+    EstimatedSizeKB = count() * 0.5 // Approximate size per event
+    by DeviceType
+| extend EstimatedSizeMB = round(EstimatedSizeKB / 1024, 2)
+| order by EstimatedSizeMB desc
+
+// Query 17: Peak usage hours
+IoTTelemetry
+| where EventTime > ago(7d)
+| summarize TotalPower = sum(Power) by Hour = hourofday(EventTime)
+| order by TotalPower desc
+
+// ============================================
+// Alerting and Thresholds
+// ============================================
+
+// Query 18: Critical temperature violations
+IoTTelemetry
+| where EventTime > ago(1h)
+| where Temperature > 90 or Temperature < 5
+| summarize
+    ViolationCount = count(),
+    MaxTemperature = max(Temperature),
+    MinTemperature = min(Temperature)
+    by DeviceId, Location
+| order by ViolationCount desc
+
+// Query 19: Device offline detection (no data in 10 minutes)
+let ActiveDevices = IoTTelemetry
+    | where EventTime > ago(1h)
+    | distinct DeviceId;
+let RecentDevices = IoTTelemetry
+    | where EventTime > ago(10m)
+    | distinct DeviceId;
+ActiveDevices
+| join kind=leftanti RecentDevices on DeviceId
+| project DeviceId, Status = "Offline", LastSeenWindow = "10+ minutes ago"
+
+// Query 20: Alert frequency by severity
+DeviceAlerts
+| where AlertTime > ago(24h)
+| summarize AlertCount = count() by Severity, bin(AlertTime, 1h)
+| render columnchart
+
+// ============================================
+// Advanced Analytics
+// ============================================
+
+// Query 21: Correlation between temperature and humidity
+IoTTelemetry
+| where EventTime > ago(24h)
+| summarize
+    AvgTemperature = avg(Temperature),
+    AvgHumidity = avg(Humidity)
+    by bin(EventTime, 1h)
+| extend Correlation = series_stats_dynamic(pack_array(AvgTemperature, AvgHumidity)).correlation
+
+// Query 22: Device behavior clustering (simple)
+IoTTelemetry
+| where EventTime > ago(24h)
+| summarize
+    AvgTemperature = avg(Temperature),
+    AvgHumidity = avg(Humidity),
+    AvgPower = avg(Power),
+    StdDevTemp = stdev(Temperature)
+    by DeviceId
+| extend
+    TempCategory = case(
+        AvgTemperature < 20, "Cold",
+        AvgTemperature < 25, "Normal",
+        AvgTemperature < 30, "Warm",
+        "Hot"
+    ),
+    PowerCategory = case(
+        AvgPower < 50, "Low",
+        AvgPower < 100, "Medium",
+        "High"
+    )
+| summarize DeviceCount = count() by TempCategory, PowerCategory
+
+// Query 23: Energy efficiency ranking
+IoTTelemetry
+| where EventTime > ago(24h)
+| summarize
+    TotalEnergy = sum(EnergyConsumed),
+    AvgPower = avg(Power),
+    OperatingHours = (max(EventTime) - min(EventTime)) / 1h
+    by DeviceId, DeviceType
+| extend EfficiencyScore = round(TotalEnergy / OperatingHours, 2)
+| order by EfficiencyScore asc
+
+// Query 24: Predictive maintenance indicators
+IoTTelemetry
+| where EventTime > ago(7d)
+| summarize
+    VoltageTrend = series_fit_line(make_list(Voltage)),
+    CurrentTrend = series_fit_line(make_list(Current)),
+    TempVariability = stdev(Temperature),
+    AbnormalReadings = countif(Status != "healthy")
+    by DeviceId
+| extend MaintenanceRisk = case(
+    AbnormalReadings > 100 or TempVariability > 10, "High",
+    AbnormalReadings > 50 or TempVariability > 5, "Medium",
+    "Low"
+)
+| where MaintenanceRisk != "Low"
+| order by AbnormalReadings desc

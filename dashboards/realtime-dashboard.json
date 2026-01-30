@@ -1,0 +1,284 @@
+{
+  "name": "IoT Real-Time Intelligence Dashboard",
+  "description": "Real-time monitoring dashboard for IoT telemetry and analytics",
+  "version": "1.0",
+  "refreshInterval": 30,
+  "timeRange": {
+    "type": "relative",
+    "value": "Last 1 hour"
+  },
+  "dataSource": {
+    "type": "KQLDatabase",
+    "clusterUri": "${KUSTO_CLUSTER_URI}",
+    "database": "${KQL_DATABASE_NAME}"
+  },
+  "variables": [
+    {
+      "name": "selectedLocation",
+      "type": "dropdown",
+      "query": "IoTTelemetry | distinct Location | order by Location asc",
+      "defaultValue": "All",
+      "multiSelect": true
+    },
+    {
+      "name": "selectedDeviceType",
+      "type": "dropdown",
+      "query": "IoTTelemetry | distinct DeviceType | order by DeviceType asc",
+      "defaultValue": "All",
+      "multiSelect": true
+    },
+    {
+      "name": "timeRange",
+      "type": "timeRange",
+      "defaultValue": "1h"
+    }
+  ],
+  "tiles": [
+    {
+      "id": "active-devices",
+      "type": "stat",
+      "title": "Active Devices",
+      "position": {"x": 0, "y": 0, "w": 3, "h": 2},
+      "query": "IoTTelemetry | where EventTime > ago({timeRange}) | dcount(DeviceId)",
+      "visualization": {
+        "type": "bigNumber",
+        "format": "number",
+        "color": "#0078D4",
+        "icon": "devices"
+      }
+    },
+    {
+      "id": "total-events",
+      "type": "stat",
+      "title": "Total Events",
+      "position": {"x": 3, "y": 0, "w": 3, "h": 2},
+      "query": "IoTTelemetry | where EventTime > ago({timeRange}) | count",
+      "visualization": {
+        "type": "bigNumber",
+        "format": "number",
+        "color": "#107C10",
+        "icon": "chart-line"
+      }
+    },
+    {
+      "id": "alert-count",
+      "type": "stat",
+      "title": "Active Alerts",
+      "position": {"x": 6, "y": 0, "w": 3, "h": 2},
+      "query": "DeviceAlerts | where AlertTime > ago({timeRange}) | count",
+      "visualization": {
+        "type": "bigNumber",
+        "format": "number",
+        "color": "#D83B01",
+        "icon": "warning",
+        "threshold": {
+          "warning": 10,
+          "critical": 50
+        }
+      }
+    },
+    {
+      "id": "avg-temperature",
+      "type": "stat",
+      "title": "Avg Temperature",
+      "position": {"x": 9, "y": 0, "w": 3, "h": 2},
+      "query": "IoTTelemetry | where EventTime > ago({timeRange}) | summarize round(avg(Temperature), 2)",
+      "visualization": {
+        "type": "bigNumber",
+        "format": "decimal",
+        "suffix": "°C",
+        "color": "#0078D4"
+      }
+    },
+    {
+      "id": "temperature-trend",
+      "type": "chart",
+      "title": "Temperature Trend by Location",
+      "position": {"x": 0, "y": 2, "w": 6, "h": 4},
+      "query": "IoTTelemetry | where EventTime > ago({timeRange}) | where Location in ({selectedLocation}) or '{selectedLocation}' == 'All' | summarize AvgTemperature = avg(Temperature) by bin(EventTime, 5m), Location | render timechart",
+      "visualization": {
+        "type": "lineChart",
+        "xAxis": "EventTime",
+        "yAxis": "AvgTemperature",
+        "series": "Location",
+        "showLegend": true,
+        "showDataLabels": false
+      }
+    },
+    {
+      "id": "humidity-trend",
+      "type": "chart",
+      "title": "Humidity Trend by Location",
+      "position": {"x": 6, "y": 2, "w": 6, "h": 4},
+      "query": "IoTTelemetry | where EventTime > ago({timeRange}) | where Location in ({selectedLocation}) or '{selectedLocation}' == 'All' | summarize AvgHumidity = avg(Humidity) by bin(EventTime, 5m), Location | render timechart",
+      "visualization": {
+        "type": "lineChart",
+        "xAxis": "EventTime",
+        "yAxis": "AvgHumidity",
+        "series": "Location",
+        "showLegend": true
+      }
+    },
+    {
+      "id": "device-status",
+      "type": "chart",
+      "title": "Device Status Distribution",
+      "position": {"x": 0, "y": 6, "w": 4, "h": 3},
+      "query": "IoTTelemetry | where EventTime > ago(5m) | summarize arg_max(EventTime, *) by DeviceId | summarize Count = count() by Status | render piechart",
+      "visualization": {
+        "type": "pieChart",
+        "showLegend": true,
+        "showPercentages": true,
+        "colorScheme": {
+          "healthy": "#107C10",
+          "warning": "#FFA500",
+          "error": "#D83B01"
+        }
+      }
+    },
+    {
+      "id": "devices-by-location",
+      "type": "chart",
+      "title": "Devices by Location",
+      "position": {"x": 4, "y": 6, "w": 4, "h": 3},
+      "query": "IoTTelemetry | where EventTime > ago({timeRange}) | summarize DeviceCount = dcount(DeviceId) by Location | render columnchart",
+      "visualization": {
+        "type": "barChart",
+        "orientation": "vertical",
+        "showValues": true,
+        "color": "#0078D4"
+      }
+    },
+    {
+      "id": "top-energy-consumers",
+      "type": "chart",
+      "title": "Top 10 Energy Consumers",
+      "position": {"x": 8, "y": 6, "w": 4, "h": 3},
+      "query": "IoTTelemetry | where EventTime > ago({timeRange}) | summarize TotalEnergy = sum(EnergyConsumed) by DeviceId | top 10 by TotalEnergy desc | render barchart",
+      "visualization": {
+        "type": "barChart",
+        "orientation": "horizontal",
+        "showValues": true,
+        "color": "#FFA500"
+      }
+    },
+    {
+      "id": "recent-alerts",
+      "type": "table",
+      "title": "Recent Alerts",
+      "position": {"x": 0, "y": 9, "w": 6, "h": 4},
+      "query": "DeviceAlerts | where AlertTime > ago({timeRange}) | order by AlertTime desc | project AlertTime, DeviceId, AlertType, Severity, Message | take 50",
+      "visualization": {
+        "type": "table",
+        "columns": [
+          {"field": "AlertTime", "header": "Time", "format": "datetime"},
+          {"field": "DeviceId", "header": "Device"},
+          {"field": "AlertType", "header": "Type"},
+          {"field": "Severity", "header": "Severity", "colorize": true},
+          {"field": "Message", "header": "Message"}
+        ],
+        "pageSize": 10,
+        "sortable": true,
+        "filterable": true
+      }
+    },
+    {
+      "id": "device-map",
+      "type": "map",
+      "title": "Device Geographic Distribution",
+      "position": {"x": 6, "y": 9, "w": 6, "h": 4},
+      "query": "IoTTelemetry | where EventTime > ago(5m) | summarize arg_max(EventTime, *) by DeviceId | where isnotnull(Latitude) and isnotnull(Longitude) | project DeviceId, Location, Latitude, Longitude, Temperature, Status",
+      "visualization": {
+        "type": "map",
+        "latitudeField": "Latitude",
+        "longitudeField": "Longitude",
+        "sizeField": "Temperature",
+        "colorField": "Status",
+        "tooltipFields": ["DeviceId", "Location", "Temperature", "Status"],
+        "colorScheme": {
+          "healthy": "#107C10",
+          "warning": "#FFA500",
+          "error": "#D83B01"
+        }
+      }
+    },
+    {
+      "id": "power-consumption",
+      "type": "chart",
+      "title": "Power Consumption Over Time",
+      "position": {"x": 0, "y": 13, "w": 6, "h": 3},
+      "query": "IoTTelemetry | where EventTime > ago({timeRange}) | summarize TotalPower = sum(Power) by bin(EventTime, 5m) | render areachart",
+      "visualization": {
+        "type": "areaChart",
+        "xAxis": "EventTime",
+        "yAxis": "TotalPower",
+        "yAxisLabel": "Power (W)",
+        "fill": true,
+        "fillOpacity": 0.3,
+        "color": "#107C10"
+      }
+    },
+    {
+      "id": "anomaly-detection",
+      "type": "chart",
+      "title": "Temperature Anomaly Detection",
+      "position": {"x": 6, "y": 13, "w": 6, "h": 3},
+      "query": "IoTTelemetry | where EventTime > ago(7d) | make-series AvgTemp = avg(Temperature) on EventTime step 1h | extend (anomalies, score, baseline) = series_decompose_anomalies(AvgTemp, 1.5, -1, 'linefit') | project EventTime, AvgTemp, anomalies, baseline",
+      "visualization": {
+        "type": "anomalyChart",
+        "xAxis": "EventTime",
+        "valueField": "AvgTemp",
+        "baselineField": "baseline",
+        "anomalyField": "anomalies",
+        "showBaseline": true,
+        "anomalyColor": "#D83B01"
+      }
+    },
+    {
+      "id": "device-health-summary",
+      "type": "table",
+      "title": "Device Health Summary by Location",
+      "position": {"x": 0, "y": 16, "w": 12, "h": 3},
+      "query": "IoTTelemetry | where EventTime > ago(1h) | summarize DeviceCount = dcount(DeviceId), AvgTemperature = round(avg(Temperature), 2), AvgHumidity = round(avg(Humidity), 2), TotalEnergy = round(sum(EnergyConsumed), 2), HealthyDevices = dcountif(DeviceId, Status == 'healthy'), UnhealthyDevices = dcountif(DeviceId, Status != 'healthy') by Location | extend HealthPercentage = round(HealthyDevices * 100.0 / DeviceCount, 2) | order by UnhealthyDevices desc",
+      "visualization": {
+        "type": "table",
+        "columns": [
+          {"field": "Location", "header": "Location"},
+          {"field": "DeviceCount", "header": "Total Devices", "format": "number"},
+          {"field": "HealthyDevices", "header": "Healthy", "format": "number", "color": "#107C10"},
+          {"field": "UnhealthyDevices", "header": "Unhealthy", "format": "number", "color": "#D83B01"},
+          {"field": "HealthPercentage", "header": "Health %", "format": "percentage"},
+          {"field": "AvgTemperature", "header": "Avg Temp (°C)", "format": "decimal"},
+          {"field": "AvgHumidity", "header": "Avg Humidity (%)", "format": "decimal"},
+          {"field": "TotalEnergy", "header": "Total Energy (Wh)", "format": "decimal"}
+        ],
+        "sortable": true
+      }
+    }
+  ],
+  "alerts": [
+    {
+      "name": "High Temperature Alert",
+      "condition": "IoTTelemetry | where EventTime > ago(5m) | where Temperature > 90 | count | where Count > 5",
+      "severity": "High",
+      "notification": {
+        "email": ["ops@example.com"],
+        "webhook": "https://example.com/alerts"
+      }
+    },
+    {
+      "name": "Device Offline Alert",
+      "condition": "let ActiveDevices = IoTTelemetry | where EventTime > ago(1h) | distinct DeviceId; let RecentDevices = IoTTelemetry | where EventTime > ago(10m) | distinct DeviceId; ActiveDevices | join kind=leftanti RecentDevices on DeviceId | count | where Count > 0",
+      "severity": "Medium",
+      "notification": {
+        "email": ["ops@example.com"]
+      }
+    }
+  ],
+  "appearance": {
+    "theme": "dark",
+    "primaryColor": "#0078D4",
+    "backgroundColor": "#1E1E1E",
+    "fontFamily": "Segoe UI, sans-serif"
+  }
+}

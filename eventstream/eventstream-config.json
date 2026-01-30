@@ -1,0 +1,229 @@
+{
+  "name": "IoT-Telemetry-Eventstream",
+  "description": "Real-time ingestion pipeline for IoT telemetry data",
+  "version": "1.0",
+  "sources": [
+    {
+      "id": "eventhub-source",
+      "type": "AzureEventHub",
+      "name": "IoT Telemetry Stream",
+      "properties": {
+        "eventHubNamespace": "${EVENTHUB_NAMESPACE}",
+        "eventHubName": "iot-telemetry-stream",
+        "consumerGroup": "$Default",
+        "authentication": {
+          "type": "ManagedIdentity"
+        },
+        "dataFormat": "JSON",
+        "compressionType": "None",
+        "timestampColumn": "eventTime",
+        "partitionKey": "deviceId"
+      }
+    },
+    {
+      "id": "custom-app-source",
+      "type": "CustomApp",
+      "name": "Custom Application Source",
+      "properties": {
+        "protocol": "AMQP",
+        "authentication": {
+          "type": "ConnectionString"
+        }
+      }
+    }
+  ],
+  "transformations": [
+    {
+      "id": "parse-telemetry",
+      "type": "ManageFields",
+      "name": "Parse and Validate Telemetry",
+      "properties": {
+        "operations": [
+          {
+            "type": "add",
+            "field": "ingestionTime",
+            "value": "System.Timestamp()"
+          },
+          {
+            "type": "add",
+            "field": "isAnomaly",
+            "value": "temperature > 85 OR temperature < 0 OR voltage > 280 OR voltage < 180"
+          },
+          {
+            "type": "add",
+            "field": "region",
+            "value": "CASE WHEN location IN ('Seattle', 'New York') THEN 'North America' WHEN location IN ('London') THEN 'Europe' WHEN location IN ('Tokyo') THEN 'Asia' WHEN location IN ('Sydney') THEN 'Oceania' ELSE 'Unknown' END"
+          }
+        ]
+      }
+    },
+    {
+      "id": "filter-valid",
+      "type": "Filter",
+      "name": "Filter Valid Records",
+      "properties": {
+        "condition": "deviceId IS NOT NULL AND eventTime IS NOT NULL"
+      }
+    },
+    {
+      "id": "aggregate-metrics",
+      "type": "Aggregate",
+      "name": "5-Minute Aggregations",
+      "properties": {
+        "windowType": "Tumbling",
+        "windowDuration": "PT5M",
+        "groupBy": [
+          "deviceId",
+          "deviceType",
+          "location"
+        ],
+        "aggregations": [
+          {
+            "function": "AVG",
+            "field": "temperature",
+            "alias": "avgTemperature"
+          },
+          {
+            "function": "MAX",
+            "field": "temperature",
+            "alias": "maxTemperature"
+          },
+          {
+            "function": "MIN",
+            "field": "temperature",
+            "alias": "minTemperature"
+          },
+          {
+            "function": "AVG",
+            "field": "humidity",
+            "alias": "avgHumidity"
+          },
+          {
+            "function": "SUM",
+            "field": "energyConsumed",
+            "alias": "totalEnergy"
+          },
+          {
+            "function": "COUNT",
+            "field": "*",
+            "alias": "eventCount"
+          }
+        ]
+      }
+    },
+    {
+      "id": "route-anomalies",
+      "type": "ConditionalSplit",
+      "name": "Route Anomalies",
+      "properties": {
+        "conditions": [
+          {
+            "name": "anomalies",
+            "condition": "isAnomaly = true"
+          },
+          {
+            "name": "normal",
+            "condition": "isAnomaly = false"
+          }
+        ]
+      }
+    }
+  ],
+  "destinations": [
+    {
+      "id": "kql-destination",
+      "type": "KQLDatabase",
+      "name": "KQL Database - Raw Telemetry",
+      "properties": {
+        "workspaceName": "${FABRIC_WORKSPACE}",
+        "kqlDatabaseName": "${KQL_DATABASE_NAME}",
+        "tableName": "IoTTelemetry",
+        "ingestionMappingReference": "IoTTelemetryMapping",
+        "inputDataFormat": "JSON"
+      },
+      "sourceTransformations": ["parse-telemetry", "filter-valid"]
+    },
+    {
+      "id": "kql-aggregates",
+      "type": "KQLDatabase",
+      "name": "KQL Database - Aggregated Metrics",
+      "properties": {
+        "workspaceName": "${FABRIC_WORKSPACE}",
+        "kqlDatabaseName": "${KQL_DATABASE_NAME}",
+        "tableName": "AggregatedMetrics",
+        "ingestionMappingReference": "AggregatedMetricsMapping",
+        "inputDataFormat": "JSON"
+      },
+      "sourceTransformations": ["parse-telemetry", "filter-valid", "aggregate-metrics"]
+    },
+    {
+      "id": "lakehouse-destination",
+      "type": "Lakehouse",
+      "name": "Lakehouse - Historical Data",
+      "properties": {
+        "workspaceName": "${FABRIC_WORKSPACE}",
+        "lakehouseName": "${LAKEHOUSE_NAME}",
+        "tableName": "iot_telemetry_raw",
+        "deltaTablePath": "/Tables/iot_telemetry_raw",
+        "inputDataFormat": "JSON"
+      },
+      "sourceTransformations": ["parse-telemetry", "filter-valid"]
+    },
+    {
+      "id": "eventhub-alerts",
+      "type": "AzureEventHub",
+      "name": "Alert Event Hub",
+      "properties": {
+        "eventHubNamespace": "${EVENTHUB_NAMESPACE}",
+        "eventHubName": "iot-alerts",
+        "authentication": {
+          "type": "ManagedIdentity"
+        }
+      },
+      "sourceTransformations": ["parse-telemetry", "route-anomalies.anomalies"]
+    },
+    {
+      "id": "powerbi-destination",
+      "type": "PowerBI",
+      "name": "Power BI - Real-Time Dashboard",
+      "properties": {
+        "workspaceName": "${FABRIC_WORKSPACE}",
+        "datasetName": "IoT-RealTime-Metrics",
+        "tableName": "LiveMetrics",
+        "streamingMode": "DirectQuery"
+      },
+      "sourceTransformations": ["parse-telemetry", "filter-valid"]
+    }
+  ],
+  "errorHandling": {
+    "deadLetterQueue": {
+      "enabled": true,
+      "eventHubNamespace": "${EVENTHUB_NAMESPACE}",
+      "eventHubName": "iot-dlq"
+    },
+    "retryPolicy": {
+      "maxRetries": 3,
+      "backoffType": "Exponential",
+      "initialBackoffSeconds": 1,
+      "maxBackoffSeconds": 60
+    }
+  },
+  "monitoring": {
+    "metricsEnabled": true,
+    "diagnosticsEnabled": true,
+    "alertRules": [
+      {
+        "name": "High Error Rate",
+        "condition": "ErrorRate > 5%",
+        "severity": "High",
+        "actionGroup": "EventstreamAlerts"
+      },
+      {
+        "name": "Low Throughput",
+        "condition": "ThroughputMBps < 0.1 FOR 5 minutes",
+        "severity": "Medium",
+        "actionGroup": "EventstreamAlerts"
+      }
+    ]
+  }
+}

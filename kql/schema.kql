@@ -1,0 +1,207 @@
+// KQL Database Schema for IoT Telemetry Analytics
+// This file contains the table schemas and mappings for real-time intelligence
+
+// ============================================
+// Tables
+// ============================================
+
+// IoT Telemetry Table - Raw telemetry data from devices
+.create table IoTTelemetry (
+    EventTime: datetime,
+    DeviceId: string,
+    DeviceType: string,
+    Location: string,
+    Temperature: real,
+    Humidity: real,
+    Pressure: real,
+    Voltage: real,
+    Current: real,
+    Power: real,
+    EnergyConsumed: real,
+    Status: string,
+    Latitude: real,
+    Longitude: real,
+    Metadata: dynamic
+)
+
+// JSON mapping for Event Hub ingestion
+.create table IoTTelemetry ingestion json mapping 'IoTTelemetryMapping' ```
+[
+    {"column": "EventTime", "path": "$.eventTime", "datatype": "datetime"},
+    {"column": "DeviceId", "path": "$.deviceId", "datatype": "string"},
+    {"column": "DeviceType", "path": "$.deviceType", "datatype": "string"},
+    {"column": "Location", "path": "$.location", "datatype": "string"},
+    {"column": "Temperature", "path": "$.temperature", "datatype": "real"},
+    {"column": "Humidity", "path": "$.humidity", "datatype": "real"},
+    {"column": "Pressure", "path": "$.pressure", "datatype": "real"},
+    {"column": "Voltage", "path": "$.voltage", "datatype": "real"},
+    {"column": "Current", "path": "$.current", "datatype": "real"},
+    {"column": "Power", "path": "$.power", "datatype": "real"},
+    {"column": "EnergyConsumed", "path": "$.energyConsumed", "datatype": "real"},
+    {"column": "Status", "path": "$.status", "datatype": "string"},
+    {"column": "Latitude", "path": "$.latitude", "datatype": "real"},
+    {"column": "Longitude", "path": "$.longitude", "datatype": "real"},
+    {"column": "Metadata", "path": "$.metadata", "datatype": "dynamic"}
+]
+```
+
+// Device Alerts Table - Detected anomalies and alerts
+.create table DeviceAlerts (
+    AlertTime: datetime,
+    DeviceId: string,
+    AlertType: string,
+    Severity: string,
+    Message: string,
+    MetricName: string,
+    MetricValue: real,
+    Threshold: real,
+    Duration: timespan
+)
+
+// Aggregated Metrics Table - Pre-computed aggregations
+.create table AggregatedMetrics (
+    WindowStart: datetime,
+    WindowEnd: datetime,
+    DeviceId: string,
+    DeviceType: string,
+    Location: string,
+    AvgTemperature: real,
+    MaxTemperature: real,
+    MinTemperature: real,
+    AvgHumidity: real,
+    AvgPressure: real,
+    TotalEnergyConsumed: real,
+    EventCount: long
+)
+
+// ============================================
+// Update Policies (Stream Processing)
+// ============================================
+
+// Function to detect temperature anomalies
+.create-or-alter function DetectTemperatureAnomalies() {
+    IoTTelemetry
+    | where Temperature > 85 or Temperature < 0
+    | extend
+        AlertType = 'TemperatureAnomaly',
+        Severity = case(
+            Temperature > 100 or Temperature < -10, 'Critical',
+            Temperature > 90 or Temperature < 5, 'High',
+            'Medium'
+        ),
+        Message = strcat('Abnormal temperature detected: ', Temperature, '°C'),
+        MetricName = 'Temperature',
+        MetricValue = Temperature,
+        Threshold = case(Temperature > 85, 85.0, 0.0),
+        Duration = 0s
+    | project
+        AlertTime = EventTime,
+        DeviceId,
+        AlertType,
+        Severity,
+        Message,
+        MetricName,
+        MetricValue,
+        Threshold,
+        Duration
+}
+
+// Update policy to automatically populate alerts
+.alter table DeviceAlerts policy update
+@'[{"IsEnabled": true, "Source": "IoTTelemetry", "Query": "DetectTemperatureAnomalies()", "IsTransactional": false, "PropagateIngestionProperties": false}]'
+
+// Function to aggregate metrics in 5-minute windows
+.create-or-alter function AggregateMetrics5Min() {
+    IoTTelemetry
+    | summarize
+        AvgTemperature = avg(Temperature),
+        MaxTemperature = max(Temperature),
+        MinTemperature = min(Temperature),
+        AvgHumidity = avg(Humidity),
+        AvgPressure = avg(Pressure),
+        TotalEnergyConsumed = sum(EnergyConsumed),
+        EventCount = count()
+        by
+        WindowStart = bin(EventTime, 5m),
+        DeviceId,
+        DeviceType,
+        Location
+    | extend WindowEnd = WindowStart + 5m
+}
+
+// Update policy for aggregated metrics
+.alter table AggregatedMetrics policy update
+@'[{"IsEnabled": true, "Source": "IoTTelemetry", "Query": "AggregateMetrics5Min()", "IsTransactional": false, "PropagateIngestionProperties": false}]'
+
+// ============================================
+// Retention Policies
+// ============================================
+
+// Keep raw telemetry for 90 days with 30 days hot cache
+.alter table IoTTelemetry policy retention
+```
+{
+    "SoftDeletePeriod": "90.00:00:00",
+    "Recoverability": "Enabled"
+}
+```
+
+.alter table IoTTelemetry policy caching hot = 30d
+
+// Keep alerts for 365 days
+.alter table DeviceAlerts policy retention
+```
+{
+    "SoftDeletePeriod": "365.00:00:00",
+    "Recoverability": "Enabled"
+}
+```
+
+// Keep aggregated metrics for 365 days
+.alter table AggregatedMetrics policy retention
+```
+{
+    "SoftDeletePeriod": "365.00:00:00",
+    "Recoverability": "Enabled"
+}
+```
+
+// ============================================
+// Partitioning Policy
+// ============================================
+
+// Partition by device type for better query performance
+.alter table IoTTelemetry policy partitioning
+```
+{
+  "PartitionKeys": [
+    {
+      "ColumnName": "DeviceType",
+      "Kind": "Hash",
+      "Properties": {
+        "Function": "XxHash64",
+        "MaxPartitionCount": 256
+      }
+    }
+  ]
+}
+```
+
+// ============================================
+// Materialized Views
+// ============================================
+
+// Real-time device status view
+.create materialized-view with (backfill=true) DeviceStatusView on table IoTTelemetry
+{
+    IoTTelemetry
+    | summarize arg_max(EventTime, *) by DeviceId
+}
+
+// Hourly energy consumption by location
+.create materialized-view with (backfill=true) HourlyEnergyByLocation on table IoTTelemetry
+{
+    IoTTelemetry
+    | summarize TotalEnergy = sum(EnergyConsumed), DeviceCount = dcount(DeviceId)
+    by Location, Hour = bin(EventTime, 1h)
+}
